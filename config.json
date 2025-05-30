@@ -1,0 +1,44 @@
+{
+    "trading": {
+        "symbol": "BTC-USD",
+        "starting_portfolio_amount": 10000.0,
+        "max_trades_per_day": 5,
+        "risk_per_trade_percent": 10,
+        "profit_target_percent": 25.0,
+        "max_portfolio_drawdown_percent": 20.0,
+        "consecutive_losses_threshold": 3,
+        "intraday_loss_threshold_percent": 5.0,
+        "cooldown_period_hours": 24,
+        "max_trade_duration_hours": 8,
+        "min_trade_quantity": 0.0001,
+        "fee_percent": 1.5
+    },
+    "risk_management": {
+        "slippage_percent": 0.1,
+        "transaction_fee_percent": 0.1,
+        "min_risk_reward_ratio": 1.5
+    },
+    "ml_model": {
+        "prediction_threshold": 0.15,
+        "trades_before_retraining": 1,
+        "features": [
+            "SMA_20",
+            "SMA_50",
+            "RSI",
+            "MACD",
+            "BB_upper",
+            "BB_lower",
+            "ATR",
+            "Returns",
+            "Volume_Change"
+        ]
+    },
+    "logging": {
+        "log_file": "trades.log",
+        "alert_level": "INFO"
+    },
+    "backtest": {
+        "start_date": "2025-03-28",
+        "end_date": "2025-05-28"
+    }
+} 
