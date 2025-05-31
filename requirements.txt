@@ -8,4 +8,5 @@ joblib>=1.0.1
 pytz>=2021.1
 requests>=2.26.0
 matplotlib>=3.4.3
-seaborn>=0.11.2 
+seaborn>=0.11.2
+cbpro>=1.1.7
