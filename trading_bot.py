@@ -15,12 +15,25 @@ import ta
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
+from cbpro import AuthenticatedClient
 
 class TradingBot:
     def __init__(self, config_path: str):
         """Initialize the trading bot with configuration."""
         self.config = self._load_config(config_path)
         self._setup_logging()
+
+        # Setup Coinbase API client if credentials are provided
+        cb_cfg = self.config.get('coinbase', {})
+        self.cb_client = None
+        self.live_trading = cb_cfg.get('enabled', False)
+        if cb_cfg.get('api_key') and cb_cfg.get('api_secret') and cb_cfg.get('passphrase'):
+            self.cb_client = AuthenticatedClient(
+                cb_cfg['api_key'],
+                cb_cfg['api_secret'],
+                cb_cfg['passphrase'],
+                api_url=cb_cfg.get('api_url', 'https://api.exchange.coinbase.com')
+            )
         
         # Initialize trading state
         self.portfolio_value = self.config['trading']['starting_portfolio_amount']
@@ -589,8 +602,52 @@ class TradingBot:
             
             return trade_info
         else:
-            # Placeholder for real API integration
-            raise NotImplementedError("Real trading not implemented")
+            if not self.cb_client:
+                raise Exception("Coinbase client not configured")
+
+            side = 'buy' if order_type.upper() == 'BUY' else 'sell'
+            try:
+                if price is not None:
+                    order = self.cb_client.place_limit_order(
+                        product_id=symbol,
+                        side=side,
+                        price=str(price),
+                        size=str(quantity)
+                    )
+                else:
+                    order = self.cb_client.place_market_order(
+                        product_id=symbol,
+                        side=side,
+                        size=str(quantity)
+                    )
+
+                exec_price = None
+                if order and 'executed_value' in order and 'filled_size' in order and float(order['filled_size'] or 0) > 0:
+                    exec_price = float(order['executed_value']) / float(order['filled_size'])
+                elif price is not None:
+                    exec_price = float(price)
+
+                fees = float(order.get('fill_fees', 0)) if order else 0.0
+                risk_amount = float(self.portfolio_value * (self.config['trading']['risk_per_trade_percent'] / 100))
+
+                return {
+                    'execution_price': exec_price,
+                    'slippage': 0.0,
+                    'fees': fees,
+                    'timestamp': datetime.now(),
+                    'quantity': float(quantity),
+                    'risk_amount': risk_amount,
+                    'order_id': order.get('id') if order else None,
+                    'order_type': order_type,
+                    'trade_details': {
+                        'risk_amount': risk_amount,
+                        'quantity': float(quantity),
+                        'execution_price': exec_price
+                    }
+                }
+            except Exception as e:
+                self._send_alert(f"Coinbase trade failed: {e}")
+                raise
     
     def _evaluate_trade(self, entry_info: Dict, exit_info: Dict) -> Dict:
         """Evaluate a trade's outcome and calculate risk-adjusted metrics."""
@@ -821,7 +878,8 @@ class TradingBot:
                         self.config['trading']['symbol'],
                         'BUY',
                         position_size,
-                        current_price
+                        current_price,
+                        is_mock=not self.live_trading
                     )
                     
                     # Ensure risk amount is set in entry info
@@ -865,7 +923,8 @@ class TradingBot:
                             self.config['trading']['symbol'],
                             'SELL',
                             position_size,
-                            current_price
+                            current_price,
+                            is_mock=not self.live_trading
                         )
                         
                         # Ensure risk amount is set in exit info

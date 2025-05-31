@@ -14,6 +14,7 @@ A sophisticated algorithmic trading bot that combines machine learning with robu
 - **Adaptive Learning**: ML model updates based on trade outcomes
 - **Comprehensive Logging**: Detailed trade logging with performance metrics
 - **Simulated Environment**: Safe testing environment with mock trade execution
+- **Coinbase Integration**: Optional real trading via the Coinbase API
 
 ## Requirements
 
@@ -42,6 +43,10 @@ The bot's behavior can be configured through `config.json`. Key parameters inclu
 - Risk management parameters
 - ML model settings
 - Logging configuration
+- Coinbase API credentials (optional)
+
+To enable live trading, set `coinbase.enabled` to `true` in `config.json` and
+provide your Coinbase API key, secret, and passphrase.
 
 ## Usage
 
@@ -50,6 +55,10 @@ The bot's behavior can be configured through `config.json`. Key parameters inclu
 ```bash
 python trading_bot.py
 ```
+
+If `coinbase.enabled` is `true`, the bot will place real orders using your
+Coinbase account. Use caution and test thoroughly before trading with real
+funds.
 
 ## Project Structure
 

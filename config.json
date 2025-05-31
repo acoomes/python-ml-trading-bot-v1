@@ -37,6 +37,13 @@
         "log_file": "trades.log",
         "alert_level": "INFO"
     },
+    "coinbase": {
+        "enabled": false,
+        "api_key": "YOUR_API_KEY",
+        "api_secret": "YOUR_API_SECRET",
+        "passphrase": "YOUR_PASSPHRASE",
+        "api_url": "https://api.exchange.coinbase.com"
+    },
     "backtest": {
         "start_date": "2025-03-28",
         "end_date": "2025-05-28"
