@@ -1,6 +1,6 @@
 # ML-Powered Trading Bot
 
-A sophisticated algorithmic trading bot that combines machine learning with robust risk management for automated trading. The bot is designed to execute a maximum of one complete trade per trading day, with a focus on intelligent trade generation through ML feedback and comprehensive risk management.
+A sophisticated algorithmic trading bot that combines machine learning with robust risk management for automated trading. The bot is designed to execute a configurable maximum number of trades per trading day, with a focus on intelligent trade generation through ML feedback and comprehensive risk management.
 
 ## Features
 
