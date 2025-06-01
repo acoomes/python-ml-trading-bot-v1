@@ -1511,7 +1511,33 @@ class TradingBot:
                 is_mock=not self.live_trading
             )
             
-            # Calculate P&L
+            # Check if the order actually succeeded
+            if exit_info.get('failed_order', False):
+                # Order failed - position is still open on Coinbase!
+                print(f"\n❌ EMERGENCY EXIT ORDER FAILED!")
+                print(f"⚠️  POSITION REMAINS OPEN ON COINBASE")
+                print(f"💾 Keeping position saved in current_position.json")
+                
+                failure_log = (
+                    f"\n❌ EMERGENCY EXIT FAILED ❌\n"
+                    f"Time: {datetime.now()}\n"
+                    f"Entry Time: {position_data['entry_timestamp']}\n"
+                    f"Entry Price: ${position_data['entry_price']:.4f}\n"
+                    f"Attempted Exit Price: ${current_price:.4f}\n"
+                    f"Position Size: {position_data['position_size']:.4f}\n"
+                    f"ERROR: Position remains OPEN on Coinbase!\n"
+                    f"ACTION REQUIRED: Manual close or bot restart needed\n"
+                    f"{'='*50}"
+                )
+                logging.error(failure_log)
+                print(failure_log)
+                
+                # DO NOT clear position state - keep it saved!
+                # DO NOT update portfolio value - position is still open!
+                print("🚨 Position state preserved - manual intervention required!")
+                return
+            
+            # Order succeeded - proceed with normal exit processing
             entry_price = position_data['entry_price']
             gross_pnl = (current_price - entry_price) * position_data['position_size']
             fees = abs(position_data['position_size'] * entry_price * self.config['trading']['fee_percent'] / 100)
@@ -1524,12 +1550,12 @@ class TradingBot:
             print(f"Fees: ${fees:.2f}")
             print(f"Net P&L: ${net_pnl:.2f}")
             
-            # Update portfolio value
+            # Update portfolio value only if order succeeded
             self.portfolio_value += net_pnl
             
-            # Log emergency exit
+            # Log successful emergency exit
             emergency_log = (
-                f"\n🚨 EMERGENCY POSITION CLOSE 🚨\n"
+                f"\n✅ EMERGENCY POSITION CLOSED ✅\n"
                 f"Time: {datetime.now()}\n"
                 f"Entry Time: {position_data['entry_timestamp']}\n"
                 f"Entry Price: ${entry_price:.4f}\n"
@@ -1542,15 +1568,28 @@ class TradingBot:
             )
             logging.warning(emergency_log)
             
-            # Clear position state
+            # Clear position state only if order succeeded
             self._clear_position_state()
             self.current_position = None
             
             print("✅ Emergency close completed.")
             
         except Exception as e:
-            print(f"[ERROR] Emergency close failed: {e}")
-            logging.error(f"Emergency close failed: {e}")
+            # Any exception means position is likely still open
+            print(f"❌ Emergency close failed: {e}")
+            print(f"⚠️  POSITION REMAINS OPEN ON COINBASE")
+            print(f"💾 Keeping position saved in current_position.json")
+            
+            failure_log = (
+                f"\n❌ EMERGENCY EXIT EXCEPTION ❌\n"
+                f"Time: {datetime.now()}\n"
+                f"Error: {str(e)}\n"
+                f"Position remains OPEN on Coinbase!\n"
+                f"ACTION REQUIRED: Manual close or bot restart needed\n"
+                f"{'='*50}"
+            )
+            logging.error(failure_log)
+            # DO NOT clear position state on exception!
     
     def _resume_position_monitoring(self):
         """Resume monitoring an existing position."""
@@ -1625,16 +1664,43 @@ class TradingBot:
                 is_mock=not self.live_trading
             )
             
-            # Calculate results
+            # Check if the order actually succeeded
+            if exit_info.get('failed_order', False):
+                # Order failed - position is still open on Coinbase!
+                print(f"\n❌ EXIT ORDER FAILED!")
+                print(f"⚠️  POSITION REMAINS OPEN ON COINBASE")
+                print(f"💾 Keeping position saved for recovery")
+                
+                failure_log = (
+                    f"\n❌ POSITION EXIT FAILED ❌\n"
+                    f"Time: {datetime.now()}\n"
+                    f"Entry Time: {position_data['entry_timestamp']}\n"
+                    f"Entry Price: ${position_data['entry_price']:.4f}\n"
+                    f"Attempted Exit Price: ${exit_price:.4f}\n"
+                    f"Position Size: {position_data['position_size']:.4f}\n"
+                    f"Exit Reason: {exit_reason}\n"
+                    f"ERROR: Position remains OPEN on Coinbase!\n"
+                    f"ACTION REQUIRED: Manual close or bot restart needed\n"
+                    f"{'='*50}"
+                )
+                logging.error(failure_log)
+                print(failure_log)
+                
+                # DO NOT clear position state - keep it saved!
+                # DO NOT update portfolio value - position is still open!
+                self.monitoring_active = False  # Stop monitoring loop
+                return
+            
+            # Order succeeded - proceed with normal exit processing
             entry_price = position_data['entry_price']
             gross_pnl = (exit_price - entry_price) * position_data['position_size']
             fees = abs(position_data['position_size'] * entry_price * self.config['trading']['fee_percent'] / 100)
             net_pnl = gross_pnl - fees
             
-            # Update portfolio
+            # Update portfolio only if order succeeded
             self.portfolio_value += net_pnl
             
-            # Log completion
+            # Log successful completion
             completion_log = (
                 f"\n✅ POSITION COMPLETED ✅\n"
                 f"Exit Time: {datetime.now()}\n"
@@ -1652,14 +1718,29 @@ class TradingBot:
             logging.info(completion_log)
             print(completion_log)
             
-            # Clear position state
+            # Clear position state only if order succeeded
             self._clear_position_state()
             self.current_position = None
             self.monitoring_active = False
             
         except Exception as e:
-            print(f"[ERROR] Failed to complete position exit: {e}")
-            logging.error(f"Position exit failed: {e}")
+            # Any exception means position is likely still open
+            print(f"❌ Failed to complete position exit: {e}")
+            print(f"⚠️  POSITION REMAINS OPEN ON COINBASE")
+            print(f"💾 Keeping position saved for recovery")
+            
+            failure_log = (
+                f"\n❌ POSITION EXIT EXCEPTION ❌\n"
+                f"Time: {datetime.now()}\n"
+                f"Error: {str(e)}\n"
+                f"Exit Reason: {exit_reason}\n"
+                f"Position remains OPEN on Coinbase!\n"
+                f"ACTION REQUIRED: Manual close or bot restart needed\n"
+                f"{'='*50}"
+            )
+            logging.error(failure_log)
+            self.monitoring_active = False  # Stop monitoring loop
+            # DO NOT clear position state on exception!
     
     def _emergency_exit(self):
         """Handle emergency bot shutdown."""
