@@ -18,6 +18,10 @@ import os
 from coinbase.rest import RESTClient
 from coinbase.rest import RESTClient as AdvancedRESTClient
 from coinbase.rest import RESTClient as RESTClient
+import random
+import signal
+import sys
+import atexit
 
 # Configure logging
 logging.basicConfig(
@@ -28,6 +32,15 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+# Try to import coinbase, handle gracefully if not available
+try:
+    from coinbase.rest import RESTClient
+    COINBASE_AVAILABLE = True
+except ImportError:
+    print("Coinbase Advanced Trading API not available. Live trading disabled.")
+    COINBASE_AVAILABLE = False
+    RESTClient = None
 
 class TradingBot:
     def __init__(self, config_file='config.json'):
@@ -42,6 +55,17 @@ class TradingBot:
         self.last_trade_time = None
         self.cooldown_until = None
 
+        # Position state management
+        self.position_state_file = 'current_position.json'
+        self.current_position = None
+        self.monitoring_active = False
+        
+        # Setup signal handlers for graceful shutdown
+        self._setup_signal_handlers()
+        
+        # Register cleanup function
+        atexit.register(self._cleanup_on_exit)
+        
         # Setup Coinbase API client if credentials are provided
         cb_cfg = self.config.get('coinbase', {})
         self.cb_client = None
@@ -93,6 +117,9 @@ class TradingBot:
             print(f"[DEBUG] Cleared {os.path.abspath(retraining_file)} at bot initialization.")
         except Exception as e:
             print(f"[ERROR] Could not clear {retraining_file}: {e}")
+        
+        # Check for existing position on startup
+        self._check_existing_position()
         
     def load_config(self, config_file):
         """Load configuration from JSON file."""
@@ -1000,6 +1027,20 @@ class TradingBot:
                     print(f"Entry Info Risk Amount: ${entry_info['risk_amount']:.2f}")
                     print(f"Entry Trade Details Risk Amount: ${entry_info['trade_details']['risk_amount']:.2f}")
                     
+                    # Save position state immediately after entry
+                    self._save_position_state(entry_info, trade_params)
+                    self.current_position = {
+                        'entry_timestamp': entry_info['timestamp'].isoformat(),
+                        'symbol': self.config['trading']['symbol'],
+                        'position_size': float(entry_info['quantity']),
+                        'entry_price': float(entry_info['execution_price']),
+                        'stop_loss': float(trade_params['stop_loss']),
+                        'take_profit': float(trade_params['take_profit']),
+                        'risk_amount': float(entry_info['risk_amount']),
+                        'portfolio_value': float(self.portfolio_value),
+                        'is_live_trading': self.live_trading
+                    }
+                    
                     # Monitor trade
                     print("\n=== Monitoring Trade ===")
                     start_time = datetime.now()
@@ -1028,49 +1069,64 @@ class TradingBot:
                             exit_reason = "Time Exit"
                             print(f"\nSimulated Time Exit at ${current_price:.2f}")
                     else:
-                        # Live trading mode: monitor real market data
-                        print(f"Live monitoring started. Stop Loss: ${trade_params['stop_loss']:.4f}, Take Profit: ${trade_params['take_profit']:.4f}")
-                        print(f"Max trade duration: {self.config['trading']['max_trade_duration_hours']} hours")
+                        # Live trading mode: use new position monitoring system
+                        self.monitoring_active = True
+                        exit_reason = None
                         
-                        while True:
-                            # Get real-time price using yfinance with 1-minute intervals
-                            try:
-                                # Use 1-minute intervals for live monitoring (not daily)
-                                current_data = self._fetch_market_data(
-                                    self.config['trading']['symbol'], 
-                                    interval='1m',  # 1-minute data for real-time updates
-                                    lookback_days=1  # Only need recent data for monitoring
-                                )
-                                current_price = float(current_data.iloc[-1]['Close'])
-                            except Exception as e:
-                                print(f"   Warning: Could not fetch live price ({e}), using last known price")
-                                # Keep using last known current_price
+                        try:
+                            print(f"Live monitoring started. Stop Loss: ${trade_params['stop_loss']:.4f}, Take Profit: ${trade_params['take_profit']:.4f}")
+                            print(f"Max trade duration: {self.config['trading']['max_trade_duration_hours']} hours")
                             
-                            # Calculate time elapsed
-                            elapsed_hours = (datetime.now() - start_time).total_seconds() / 3600
-                            remaining_hours = self.config['trading']['max_trade_duration_hours'] - elapsed_hours
-                            
-                            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Monitoring: Price=${current_price:.4f} | "
-                                  f"SL=${trade_params['stop_loss']:.4f} | TP=${trade_params['take_profit']:.4f} | "
-                                  f"Time Left: {remaining_hours:.1f}h")
-                            
-                            # Check stop loss and take profit
-                            if current_price <= float(trade_params['stop_loss']):
-                                print(f"\n🔴 STOP LOSS TRIGGERED at ${current_price:.4f}!")
-                                exit_reason = "Stop Loss"
-                                break
-                            elif current_price >= float(trade_params['take_profit']):
-                                print(f"\n🟢 TAKE PROFIT TRIGGERED at ${current_price:.4f}!")
-                                exit_reason = "Take Profit"
-                                break
-                            elif elapsed_hours >= self.config['trading']['max_trade_duration_hours']:
-                                print(f"\n⏰ MAXIMUM TRADE DURATION REACHED ({elapsed_hours:.1f}h)!")
-                                exit_reason = "Time Exit"
-                                break
-                            else:
-                                print("   Status: Monitoring... (checking again in 60 seconds)")
-                                time.sleep(60)  # Check every minute
-                                continue
+                            while self.monitoring_active:
+                                # Get real-time price using yfinance with 1-minute intervals
+                                try:
+                                    # Use 1-minute intervals for live monitoring (not daily)
+                                    current_data = self._fetch_market_data(
+                                        self.config['trading']['symbol'], 
+                                        interval='1m',  # 1-minute data for real-time updates
+                                        lookback_days=1  # Only need recent data for monitoring
+                                    )
+                                    current_price = float(current_data.iloc[-1]['Close'])
+                                except Exception as e:
+                                    print(f"   Warning: Could not fetch live price ({e}), using last known price")
+                                    # Keep using last known current_price
+                                
+                                # Calculate time elapsed
+                                elapsed_hours = (datetime.now() - start_time).total_seconds() / 3600
+                                remaining_hours = self.config['trading']['max_trade_duration_hours'] - elapsed_hours
+                                
+                                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Monitoring: Price=${current_price:.4f} | "
+                                      f"SL=${trade_params['stop_loss']:.4f} | TP=${trade_params['take_profit']:.4f} | "
+                                      f"Time Left: {remaining_hours:.1f}h")
+                                
+                                # Check stop loss and take profit
+                                if current_price <= float(trade_params['stop_loss']):
+                                    print(f"\n🔴 STOP LOSS TRIGGERED at ${current_price:.4f}!")
+                                    exit_reason = "Stop Loss"
+                                    self.monitoring_active = False
+                                    break
+                                elif current_price >= float(trade_params['take_profit']):
+                                    print(f"\n🟢 TAKE PROFIT TRIGGERED at ${current_price:.4f}!")
+                                    exit_reason = "Take Profit"
+                                    self.monitoring_active = False
+                                    break
+                                elif elapsed_hours >= self.config['trading']['max_trade_duration_hours']:
+                                    print(f"\n⏰ MAXIMUM TRADE DURATION REACHED ({elapsed_hours:.1f}h)!")
+                                    exit_reason = "Time Exit"
+                                    self.monitoring_active = False
+                                    break
+                                else:
+                                    print("   Status: Monitoring... (checking again in 60 seconds)")
+                                    time.sleep(60)  # Check every minute
+                                    continue
+                        except KeyboardInterrupt:
+                            print("\n[SIGNAL] Monitoring interrupted by user. Position remains open.")
+                            return  # Exit without completing trade - position state preserved
+                        except Exception as e:
+                            print(f"[ERROR] Monitoring error: {e}")
+                            # On critical error, attempt emergency close
+                            self._emergency_close_position(self.current_position)
+                            return
                     
                     # Execute exit
                     print(f"Executing exit trade at ${current_price:.2f}...")
@@ -1157,6 +1213,11 @@ class TradingBot:
                     # Update portfolio and ML model
                     self._update_portfolio_value(float(trade_evaluation['net_pnl']))
                     self._ml_feedback_loop(trade_evaluation)
+                    
+                    # Clear position state after successful completion
+                    self._clear_position_state()
+                    self.current_position = None
+                    self.monitoring_active = False
                     
                     trades_today += 1
                     break
@@ -1336,6 +1397,293 @@ class TradingBot:
         self.next_retraining_trade = 1
         self.last_retraining = None
         print('[DEBUG] start_new_backtest() called.')
+
+    def _setup_signal_handlers(self):
+        """Setup signal handlers for graceful shutdown."""
+        def signal_handler(signum, frame):
+            print(f"\n[SIGNAL] Received signal {signum}. Initiating graceful shutdown...")
+            self._emergency_exit()
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+        signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
+        if hasattr(signal, 'SIGBREAK'):  # Windows
+            signal.signal(signal.SIGBREAK, signal_handler)
+    
+    def _check_existing_position(self):
+        """Check for existing position on bot startup and offer recovery options."""
+        if os.path.exists(self.position_state_file):
+            try:
+                with open(self.position_state_file, 'r') as f:
+                    position_data = json.load(f)
+                
+                print(f"\n🚨 EXISTING POSITION DETECTED! 🚨")
+                print(f"Entry Time: {position_data['entry_timestamp']}")
+                print(f"Symbol: {position_data['symbol']}")
+                print(f"Position Size: {position_data['position_size']:.4f}")
+                print(f"Entry Price: ${position_data['entry_price']:.4f}")
+                print(f"Stop Loss: ${position_data['stop_loss']:.4f}")
+                print(f"Take Profit: ${position_data['take_profit']:.4f}")
+                print(f"Risk Amount: ${position_data['risk_amount']:.2f}")
+                
+                # Calculate time elapsed
+                entry_time = datetime.fromisoformat(position_data['entry_timestamp'])
+                elapsed_hours = (datetime.now() - entry_time).total_seconds() / 3600
+                print(f"Time Elapsed: {elapsed_hours:.2f} hours")
+                
+                if self.live_trading:
+                    choice = input("\nOptions:\n1) Resume monitoring\n2) Close position immediately\n3) Ignore (dangerous!)\nChoice (1/2/3): ")
+                    
+                    if choice == '1':
+                        self.current_position = position_data
+                        print("✅ Resuming position monitoring...")
+                        self._resume_position_monitoring()
+                    elif choice == '2':
+                        print("🔴 Closing position immediately...")
+                        self._emergency_close_position(position_data)
+                    else:
+                        print("⚠️  WARNING: Ignoring existing position. This is dangerous!")
+                        os.remove(self.position_state_file)
+                else:
+                    print("📝 Mock mode detected. Clearing position file.")
+                    os.remove(self.position_state_file)
+                    
+            except Exception as e:
+                print(f"[ERROR] Failed to read position file: {e}")
+                print("🗑️  Removing corrupted position file.")
+                os.remove(self.position_state_file)
+    
+    def _save_position_state(self, entry_info: Dict, trade_params: Dict):
+        """Save current position state to file."""
+        position_data = {
+            'entry_timestamp': entry_info['timestamp'].isoformat(),
+            'symbol': self.config['trading']['symbol'],
+            'position_size': float(entry_info['quantity']),
+            'entry_price': float(entry_info['execution_price']),
+            'stop_loss': float(trade_params['stop_loss']),
+            'take_profit': float(trade_params['take_profit']),
+            'risk_amount': float(entry_info['risk_amount']),
+            'portfolio_value': float(self.portfolio_value),
+            'is_live_trading': self.live_trading
+        }
+        
+        try:
+            with open(self.position_state_file, 'w') as f:
+                json.dump(position_data, f, indent=2)
+            print(f"💾 Position state saved to {self.position_state_file}")
+        except Exception as e:
+            print(f"[ERROR] Failed to save position state: {e}")
+    
+    def _clear_position_state(self):
+        """Clear position state file after successful trade completion."""
+        try:
+            if os.path.exists(self.position_state_file):
+                os.remove(self.position_state_file)
+                print("🗑️  Position state cleared.")
+        except Exception as e:
+            print(f"[ERROR] Failed to clear position state: {e}")
+    
+    def _emergency_close_position(self, position_data: Dict = None):
+        """Emergency close current position."""
+        if position_data is None:
+            position_data = self.current_position
+            
+        if position_data is None:
+            print("ℹ️  No position to close.")
+            return
+        
+        try:
+            print(f"\n🚨 EMERGENCY POSITION CLOSE 🚨")
+            
+            # Get current market price
+            current_data = self._fetch_market_data(position_data['symbol'])
+            current_price = float(current_data.iloc[-1]['Close'])
+            
+            print(f"Current Price: ${current_price:.4f}")
+            print(f"Position Size: {position_data['position_size']:.4f}")
+            
+            # Execute emergency sell
+            exit_info = self._execute_trade(
+                position_data['symbol'],
+                'SELL',
+                position_data['position_size'],
+                current_price,
+                is_mock=not self.live_trading
+            )
+            
+            # Calculate P&L
+            entry_price = position_data['entry_price']
+            gross_pnl = (current_price - entry_price) * position_data['position_size']
+            fees = abs(position_data['position_size'] * entry_price * self.config['trading']['fee_percent'] / 100)
+            net_pnl = gross_pnl - fees
+            
+            print(f"Emergency Exit Summary:")
+            print(f"Entry Price: ${entry_price:.4f}")
+            print(f"Exit Price: ${current_price:.4f}")
+            print(f"Gross P&L: ${gross_pnl:.2f}")
+            print(f"Fees: ${fees:.2f}")
+            print(f"Net P&L: ${net_pnl:.2f}")
+            
+            # Update portfolio value
+            self.portfolio_value += net_pnl
+            
+            # Log emergency exit
+            emergency_log = (
+                f"\n🚨 EMERGENCY POSITION CLOSE 🚨\n"
+                f"Time: {datetime.now()}\n"
+                f"Entry Time: {position_data['entry_timestamp']}\n"
+                f"Entry Price: ${entry_price:.4f}\n"
+                f"Exit Price: ${current_price:.4f}\n"
+                f"Position Size: {position_data['position_size']:.4f}\n"
+                f"Net P&L: ${net_pnl:.2f}\n"
+                f"Portfolio Value: ${self.portfolio_value:.2f}\n"
+                f"Exit Reason: Emergency Close\n"
+                f"{'='*50}"
+            )
+            logging.warning(emergency_log)
+            
+            # Clear position state
+            self._clear_position_state()
+            self.current_position = None
+            
+            print("✅ Emergency close completed.")
+            
+        except Exception as e:
+            print(f"[ERROR] Emergency close failed: {e}")
+            logging.error(f"Emergency close failed: {e}")
+    
+    def _resume_position_monitoring(self):
+        """Resume monitoring an existing position."""
+        if self.current_position is None:
+            print("[ERROR] No position to resume monitoring.")
+            return
+        
+        position_data = self.current_position
+        entry_time = datetime.fromisoformat(position_data['entry_timestamp'])
+        
+        print(f"\n🔄 Resuming position monitoring...")
+        print(f"Stop Loss: ${position_data['stop_loss']:.4f}")
+        print(f"Take Profit: ${position_data['take_profit']:.4f}")
+        
+        # Continue monitoring with existing parameters
+        self.monitoring_active = True
+        start_time = entry_time  # Use original entry time for duration calculation
+        
+        while self.monitoring_active:
+            try:
+                # Get current price
+                current_data = self._fetch_market_data(
+                    position_data['symbol'], 
+                    interval='1m',
+                    lookback_days=1
+                )
+                current_price = float(current_data.iloc[-1]['Close'])
+                
+                # Calculate time elapsed from original entry
+                elapsed_hours = (datetime.now() - start_time).total_seconds() / 3600
+                remaining_hours = self.config['trading']['max_trade_duration_hours'] - elapsed_hours
+                
+                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Monitoring: Price=${current_price:.4f} | "
+                      f"SL=${position_data['stop_loss']:.4f} | TP=${position_data['take_profit']:.4f} | "
+                      f"Time Left: {remaining_hours:.1f}h")
+                
+                # Check exit conditions
+                if current_price <= position_data['stop_loss']:
+                    print(f"\n🔴 STOP LOSS TRIGGERED at ${current_price:.4f}!")
+                    self._complete_position_exit(position_data, current_price, "Stop Loss")
+                    break
+                elif current_price >= position_data['take_profit']:
+                    print(f"\n🟢 TAKE PROFIT TRIGGERED at ${current_price:.4f}!")
+                    self._complete_position_exit(position_data, current_price, "Take Profit")
+                    break
+                elif elapsed_hours >= self.config['trading']['max_trade_duration_hours']:
+                    print(f"\n⏰ MAXIMUM TRADE DURATION REACHED ({elapsed_hours:.1f}h)!")
+                    self._complete_position_exit(position_data, current_price, "Time Exit")
+                    break
+                else:
+                    print("   Status: Monitoring... (checking again in 60 seconds)")
+                    time.sleep(60)
+                    continue
+                    
+            except KeyboardInterrupt:
+                print("\n[SIGNAL] Monitoring interrupted. Position remains open.")
+                break
+            except Exception as e:
+                print(f"[ERROR] Monitoring error: {e}")
+                time.sleep(60)
+                continue
+    
+    def _complete_position_exit(self, position_data: Dict, exit_price: float, exit_reason: str):
+        """Complete position exit and cleanup."""
+        try:
+            # Execute sell order
+            exit_info = self._execute_trade(
+                position_data['symbol'],
+                'SELL',
+                position_data['position_size'],
+                exit_price,
+                is_mock=not self.live_trading
+            )
+            
+            # Calculate results
+            entry_price = position_data['entry_price']
+            gross_pnl = (exit_price - entry_price) * position_data['position_size']
+            fees = abs(position_data['position_size'] * entry_price * self.config['trading']['fee_percent'] / 100)
+            net_pnl = gross_pnl - fees
+            
+            # Update portfolio
+            self.portfolio_value += net_pnl
+            
+            # Log completion
+            completion_log = (
+                f"\n✅ POSITION COMPLETED ✅\n"
+                f"Exit Time: {datetime.now()}\n"
+                f"Entry Time: {position_data['entry_timestamp']}\n"
+                f"Entry Price: ${entry_price:.4f}\n"
+                f"Exit Price: ${exit_price:.4f}\n"
+                f"Position Size: {position_data['position_size']:.4f}\n"
+                f"Gross P&L: ${gross_pnl:.2f}\n"
+                f"Fees: ${fees:.2f}\n"
+                f"Net P&L: ${net_pnl:.2f}\n"
+                f"Portfolio Value: ${self.portfolio_value:.2f}\n"
+                f"Exit Reason: {exit_reason}\n"
+                f"{'='*50}"
+            )
+            logging.info(completion_log)
+            print(completion_log)
+            
+            # Clear position state
+            self._clear_position_state()
+            self.current_position = None
+            self.monitoring_active = False
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to complete position exit: {e}")
+            logging.error(f"Position exit failed: {e}")
+    
+    def _emergency_exit(self):
+        """Handle emergency bot shutdown."""
+        print("\n🚨 EMERGENCY SHUTDOWN INITIATED 🚨")
+        
+        if self.current_position is not None:
+            print("📍 Active position detected. Initiating emergency close...")
+            self._emergency_close_position()
+        else:
+            print("ℹ️  No active position to close.")
+        
+        print("🔄 Saving current state...")
+        # Could save additional state here if needed
+        
+        print("✅ Emergency shutdown completed.")
+    
+    def _cleanup_on_exit(self):
+        """Cleanup function called on normal exit."""
+        if self.current_position is not None:
+            print("\n⚠️  Bot exiting with active position!")
+            print("💾 Position state preserved for recovery on next startup.")
+        else:
+            # Clean up position file if no active position
+            self._clear_position_state()
 
 if __name__ == "__main__":
     print("[DEBUG] Script started: __main__ entry point.")

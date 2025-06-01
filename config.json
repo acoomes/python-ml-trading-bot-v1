@@ -3,7 +3,7 @@
         "symbol": "XRP-USD",
         "starting_portfolio_amount": 100.0,
         "max_trades_per_day": 10,
-        "risk_per_trade_percent": 5,
+        "risk_per_trade_percent": 10,
         "profit_target_percent": 25.0,
         "max_portfolio_drawdown_percent": 20.0,
         "consecutive_losses_threshold": 3,
@@ -19,7 +19,7 @@
         "min_risk_reward_ratio": 1.5
     },
     "ml_model": {
-        "prediction_threshold": 0.12,
+        "prediction_threshold": 0.10,
         "trades_before_retraining": 1,
         "features": [
             "SMA_20",
@@ -38,7 +38,7 @@
         "alert_level": "INFO"
     },
     "coinbase": {
-        "enabled": true,
+        "enabled": false,
         "api_url": "https://api.coinbase.com/api/v3/brokerage/"
     },
     "backtest": {
