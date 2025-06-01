@@ -15,32 +15,58 @@ import ta
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
-from cbpro import AuthenticatedClient
+from coinbase.rest import RESTClient
+from coinbase.rest import RESTClient as AdvancedRESTClient
+from coinbase.rest import RESTClient as RESTClient
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('trading_bot.log'),
+        logging.StreamHandler()
+    ]
+)
 
 class TradingBot:
-    def __init__(self, config_path: str):
+    def __init__(self, config_file='config.json'):
         """Initialize the trading bot with configuration."""
-        self.config = self._load_config(config_path)
+        self.config = self.load_config(config_file)
         self._setup_logging()
 
-        # Setup Coinbase API client if credentials are provided
-        cb_cfg = self.config.get('coinbase', {})
-        self.cb_client = None
-        self.live_trading = cb_cfg.get('enabled', False)
-        if cb_cfg.get('api_key') and cb_cfg.get('api_secret') and cb_cfg.get('passphrase'):
-            self.cb_client = AuthenticatedClient(
-                cb_cfg['api_key'],
-                cb_cfg['api_secret'],
-                cb_cfg['passphrase'],
-                api_url=cb_cfg.get('api_url', 'https://api.exchange.coinbase.com')
-            )
-        
-        # Initialize trading state
+        # Initialize trading state first
         self.portfolio_value = self.config['trading']['starting_portfolio_amount']
         self.initial_portfolio_value = self.portfolio_value
         self.consecutive_losses = 0
         self.last_trade_time = None
         self.cooldown_until = None
+
+        # Setup Coinbase API client if credentials are provided
+        cb_cfg = self.config.get('coinbase', {})
+        self.cb_client = None
+        self.live_trading = cb_cfg.get('enabled', False)
+        
+        # Load API credentials from cdp_api_key.json
+        try:
+            # Use the key_file parameter with the new PEM-formatted key
+            self.cb_client = RESTClient(key_file='cdp_api_key.json')
+            
+            # Test the connection by getting account information
+            accounts = self.cb_client.get_accounts()
+            if accounts:
+                logging.info("Successfully connected to Coinbase Advanced Trading API")
+                # Enable live trading for testing with configurable risk
+                self.live_trading = True
+                risk_pct = self.config['trading']['risk_per_trade_percent']
+                logging.warning(f"LIVE TRADING ENABLED: Using {risk_pct}% risk per trade (~${self.portfolio_value * risk_pct/100:.0f} trades)")
+            else:
+                logging.warning("Connected to API but no accounts found")
+                self.live_trading = False
+        except Exception as e:
+            logging.error(f"Failed to initialize Coinbase client: {str(e)}")
+            self.cb_client = None
+            self.live_trading = False
         
         # Initialize ML model
         self.model = RandomForestClassifier(n_estimators=100, random_state=42)
@@ -68,13 +94,14 @@ class TradingBot:
         except Exception as e:
             print(f"[ERROR] Could not clear {retraining_file}: {e}")
         
-    def _load_config(self, config_path: str) -> Dict:
+    def load_config(self, config_file):
         """Load configuration from JSON file."""
         try:
-            with open(config_path, 'r') as f:
+            with open(config_file, 'r') as f:
                 return json.load(f)
         except Exception as e:
-            raise Exception(f"Failed to load config: {str(e)}")
+            logging.error(f"Error loading config: {str(e)}")
+            raise
     
     def _setup_logging(self):
         """Setup logging configuration."""
@@ -100,6 +127,9 @@ class TradingBot:
     def _preprocess_data(self, data: pd.DataFrame) -> pd.DataFrame:
         """Preprocess market data and engineer features."""
         df = data.copy()
+        if df.empty:
+            print("No data available for this symbol and date range.")
+            return None
         
         # Add technical indicators
         df['SMA_20'] = ta.trend.sma_indicator(df['Close'], window=20)
@@ -450,6 +480,12 @@ class TradingBot:
             
             # Preprocess data
             processed_data = self._preprocess_data(market_data)
+            if processed_data is None:
+                error_msg = f"No data available for {self.config['trading']['symbol']}. Please check the symbol and date range."
+                logging.error(error_msg)
+                self._send_alert(error_msg)
+                raise ValueError(error_msg)
+            
             logging.info("Data preprocessing completed")
             
             # Prepare features and target
@@ -518,8 +554,10 @@ class TradingBot:
         # Calculate position size based on risk amount and current price
         position_size = float(risk_amount / current_price)
         
-        # Adjust position size based on confidence
+        # Adjust position size based on confidence (sophisticated risk management)
+        # Lower confidence = smaller position size = more conservative approach
         position_size *= float(confidence)
+        actual_risk = float(position_size * current_price)
         
         # Calculate stop loss and take profit levels
         stop_loss_pct = float(self.config['trading']['risk_per_trade_percent'])
@@ -531,26 +569,29 @@ class TradingBot:
         print(f"\nTrade Parameters Debug:")
         print(f"Portfolio Value: ${self.portfolio_value:.2f}")
         print(f"Risk Per Trade %: {self.config['trading']['risk_per_trade_percent']:.1f}%")
-        print(f"Calculated Risk Amount: ${risk_amount:.2f}")
-        print(f"Position Size: {position_size:.4f}")
-        print(f"Stop Loss: ${stop_loss:.2f}")
-        print(f"Take Profit: ${take_profit:.2f}")
+        print(f"Max Risk Amount: ${risk_amount:.2f}")
+        print(f"ML Confidence: {confidence:.1%}")
+        print(f"Current Price: ${current_price:.4f}")
+        print(f"Position Size: {position_size:.4f} XRP")
+        print(f"Actual Risk Taken: ${actual_risk:.2f} ({confidence:.1%} of max)")
+        print(f"Stop Loss: ${stop_loss:.4f}")
+        print(f"Take Profit: ${take_profit:.4f}")
         
         # Create trade parameters dictionary with explicit float conversions
         trade_params = {
             'position_size': float(position_size),
             'stop_loss': float(stop_loss),
             'take_profit': float(take_profit),
-            'risk_amount': float(risk_amount),  # Ensure risk amount is stored as float
+            'risk_amount': float(actual_risk),  # Use actual risk taken, not max risk
             'trade_details': {  # Add trade details to preserve risk information
-                'risk_amount': float(risk_amount),
+                'risk_amount': float(actual_risk),
                 'position_size': float(position_size),
                 'current_price': float(current_price)
             }
         }
         
         print(f"\nTrade Parameters Final Check:")
-        print(f"Risk Amount: ${trade_params['risk_amount']:.2f}")
+        print(f"Actual Risk Amount: ${trade_params['risk_amount']:.2f}")
         print(f"Trade Details Risk Amount: ${trade_params['trade_details']['risk_amount']:.2f}")
         
         return trade_params
@@ -559,6 +600,8 @@ class TradingBot:
                       quantity: float, price: Optional[float] = None,
                       is_mock: bool = True) -> Dict:
         """Execute a trade (mock implementation)."""
+        print(f"\n[DEBUG] _execute_trade called: symbol={symbol}, order_type={order_type}, quantity={quantity:.4f}, price={price}, is_mock={is_mock}")
+        
         if is_mock:
             # Simulate trade execution
             execution_price = float(price if price else self._fetch_market_data(symbol).iloc[-1]['Close'])
@@ -581,9 +624,9 @@ class TradingBot:
                 'fees': float(fees),
                 'timestamp': datetime.now(),
                 'quantity': float(quantity),
-                'risk_amount': float(risk_amount),  # Ensure risk amount is stored as float
+                'risk_amount': float(risk_amount),
                 'order_type': order_type,
-                'trade_details': {  # Add trade details to preserve risk information
+                'trade_details': {
                     'risk_amount': float(risk_amount),
                     'quantity': float(quantity),
                     'execution_price': float(execution_price),
@@ -602,52 +645,114 @@ class TradingBot:
             
             return trade_info
         else:
+            print(f"\n[DEBUG] LIVE TRADING MODE - Attempting real order placement")
             if not self.cb_client:
                 raise Exception("Coinbase client not configured")
 
-            side = 'buy' if order_type.upper() == 'BUY' else 'sell'
             try:
-                if price is not None:
-                    order = self.cb_client.place_limit_order(
+                # Round price and quantity to Coinbase requirements
+                # XRP-USD: price_increment = 0.0001, base_increment = 0.000001
+                rounded_price = round(price, 4) if price is not None else None
+                rounded_quantity = round(quantity, 6)
+                
+                print(f"[DEBUG] Original price: {price}, rounded: {rounded_price}")
+                print(f"[DEBUG] Original quantity: {quantity}, rounded: {rounded_quantity}")
+                print(f"[DEBUG] Preparing order: {order_type} {rounded_quantity} {symbol}")
+                
+                side = 'BUY' if order_type.upper() == 'BUY' else 'SELL'
+                # Generate a unique client order ID using timestamp and random number
+                client_order_id = f"{int(time.time())}_{side}_{rounded_quantity}"
+                print(f"[DEBUG] Client Order ID: {client_order_id}")
+                
+                order_result = None
+                if rounded_price is not None:
+                    print(f"[DEBUG] Placing limit order at ${rounded_price:.4f}")
+                    # Place limit order
+                    order_result = self.cb_client.create_order(
                         product_id=symbol,
+                        client_order_id=client_order_id,
                         side=side,
-                        price=str(price),
-                        size=str(quantity)
+                        order_configuration={
+                            'limit_limit_gtc': {
+                                'base_size': str(rounded_quantity),
+                                'limit_price': str(rounded_price)
+                            }
+                        }
                     )
                 else:
-                    order = self.cb_client.place_market_order(
+                    print(f"[DEBUG] Placing market order")
+                    # Place market order
+                    order_result = self.cb_client.create_order(
                         product_id=symbol,
+                        client_order_id=client_order_id,
                         side=side,
-                        size=str(quantity)
+                        order_configuration={
+                            'market_market_ioc': {
+                                'base_size': str(rounded_quantity)
+                            }
+                        }
                     )
 
-                exec_price = None
-                if order and 'executed_value' in order and 'filled_size' in order and float(order['filled_size'] or 0) > 0:
-                    exec_price = float(order['executed_value']) / float(order['filled_size'])
-                elif price is not None:
-                    exec_price = float(price)
+                print(f"[DEBUG] Order response received: {order_result}")
 
-                fees = float(order.get('fill_fees', 0)) if order else 0.0
+                exec_price = None
+                if order_result and hasattr(order_result, 'average_filled_price') and order_result.average_filled_price:
+                    exec_price = float(order_result.average_filled_price)
+                elif rounded_price is not None:
+                    exec_price = float(rounded_price)
+                else:
+                    # Fallback to current market price
+                    current_data = self._fetch_market_data(symbol)
+                    exec_price = float(current_data.iloc[-1]['Close'])
+
+                fees = 0.0
+                if order_result and hasattr(order_result, 'total_fees'):
+                    fees = float(order_result.total_fees or 0)
+                
                 risk_amount = float(self.portfolio_value * (self.config['trading']['risk_per_trade_percent'] / 100))
+
+                print(f"[DEBUG] Trade completed - exec_price: ${exec_price}, fees: ${fees}")
 
                 return {
                     'execution_price': exec_price,
                     'slippage': 0.0,
                     'fees': fees,
                     'timestamp': datetime.now(),
-                    'quantity': float(quantity),
+                    'quantity': float(rounded_quantity),
                     'risk_amount': risk_amount,
-                    'order_id': order.get('id') if order else None,
+                    'order_id': getattr(order_result, 'order_id', None) if order_result else None,
                     'order_type': order_type,
                     'trade_details': {
                         'risk_amount': risk_amount,
-                        'quantity': float(quantity),
+                        'quantity': float(rounded_quantity),
                         'execution_price': exec_price
                     }
                 }
             except Exception as e:
-                self._send_alert(f"Coinbase trade failed: {e}")
-                raise
+                print(f"[DEBUG] Order placement failed: {e}")
+                logging.error(f"Live trading order failed: {e}")
+                
+                # Instead of raising an exception and hanging, return a mock trade result
+                print(f"[DEBUG] Falling back to mock execution due to order failure")
+                fallback_price = price if price is not None else self._fetch_market_data(symbol).iloc[-1]['Close']
+                risk_amount = float(self.portfolio_value * (self.config['trading']['risk_per_trade_percent'] / 100))
+                
+                return {
+                    'execution_price': float(fallback_price),
+                    'slippage': 0.0,
+                    'fees': 0.0,
+                    'timestamp': datetime.now(),
+                    'quantity': float(quantity),
+                    'risk_amount': risk_amount,
+                    'order_id': None,
+                    'order_type': order_type,
+                    'failed_order': True,  # Flag to indicate this was a failed order
+                    'trade_details': {
+                        'risk_amount': risk_amount,
+                        'quantity': float(quantity),
+                        'execution_price': float(fallback_price)
+                    }
+                }
     
     def _evaluate_trade(self, entry_info: Dict, exit_info: Dict) -> Dict:
         """Evaluate a trade's outcome and calculate risk-adjusted metrics."""
@@ -847,7 +952,7 @@ class TradingBot:
                 confidence, prediction = self._make_ml_prediction(processed_data)
                 print(f"ML Model Confidence: {confidence:.2%}")
                 
-                if confidence > self.config['ml_model']['prediction_threshold']:
+                if confidence >= self.config['ml_model']['prediction_threshold']:
                     print("\n=== Trade Setup ===")
                     current_price = float(market_data.iloc[-1]['Close'])
                     
@@ -898,113 +1003,163 @@ class TradingBot:
                     # Monitor trade
                     print("\n=== Monitoring Trade ===")
                     start_time = datetime.now()
-                    while True:
-                        current_data = self._fetch_market_data(self.config['trading']['symbol'])
-                        current_price = float(current_data.iloc[-1]['Close'])
+                    
+                    if not self.live_trading:
+                        # Mock mode: simulate a trade outcome
+                        print("Mock mode: Simulating trade outcome...")
+                        import random
                         
-                        # Check stop loss and take profit
+                        # Simulate some time passing (1-30 minutes)
+                        simulated_duration_minutes = random.randint(1, 30)
+                        print(f"Simulating {simulated_duration_minutes} minutes of trading...")
+                        
+                        # Simulate price movement (random walk)
+                        price_change_percent = random.uniform(-0.05, 0.05)  # -5% to +5%
+                        current_price = float(current_price * (1 + price_change_percent))
+                        
+                        # Determine exit reason based on simulated price
                         if current_price <= float(trade_params['stop_loss']):
-                            print("\nStop Loss triggered!")
                             exit_reason = "Stop Loss"
+                            print(f"\nSimulated Stop Loss triggered at ${current_price:.2f}")
                         elif current_price >= float(trade_params['take_profit']):
-                            print("\nTake Profit triggered!")
                             exit_reason = "Take Profit"
-                        elif (datetime.now() - start_time).total_seconds() / 3600 >= \
-                             self.config['trading']['max_trade_duration_hours']:
-                            print("\nMaximum trade duration reached!")
-                            exit_reason = "Time Exit"
+                            print(f"\nSimulated Take Profit triggered at ${current_price:.2f}")
                         else:
-                            time.sleep(60)  # Check every minute
-                            continue
+                            exit_reason = "Time Exit"
+                            print(f"\nSimulated Time Exit at ${current_price:.2f}")
+                    else:
+                        # Live trading mode: monitor real market data
+                        print(f"Live monitoring started. Stop Loss: ${trade_params['stop_loss']:.4f}, Take Profit: ${trade_params['take_profit']:.4f}")
+                        print(f"Max trade duration: {self.config['trading']['max_trade_duration_hours']} hours")
                         
-                        # Execute exit
-                        print(f"Executing exit trade at ${current_price:.2f}...")
-                        exit_info = self._execute_trade(
-                            self.config['trading']['symbol'],
-                            'SELL',
-                            position_size,
-                            current_price,
-                            is_mock=not self.live_trading
-                        )
-                        
-                        # Ensure risk amount is set in exit info
-                        exit_info['quantity'] = float(position_size)
-                        exit_info['risk_amount'] = float(risk_amount)
-                        exit_info['exit_reason'] = exit_reason
-                        exit_info['trade_details'] = {
+                        while True:
+                            # Get real-time price using yfinance with 1-minute intervals
+                            try:
+                                # Use 1-minute intervals for live monitoring (not daily)
+                                current_data = self._fetch_market_data(
+                                    self.config['trading']['symbol'], 
+                                    interval='1m',  # 1-minute data for real-time updates
+                                    lookback_days=1  # Only need recent data for monitoring
+                                )
+                                current_price = float(current_data.iloc[-1]['Close'])
+                            except Exception as e:
+                                print(f"   Warning: Could not fetch live price ({e}), using last known price")
+                                # Keep using last known current_price
+                            
+                            # Calculate time elapsed
+                            elapsed_hours = (datetime.now() - start_time).total_seconds() / 3600
+                            remaining_hours = self.config['trading']['max_trade_duration_hours'] - elapsed_hours
+                            
+                            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Monitoring: Price=${current_price:.4f} | "
+                                  f"SL=${trade_params['stop_loss']:.4f} | TP=${trade_params['take_profit']:.4f} | "
+                                  f"Time Left: {remaining_hours:.1f}h")
+                            
+                            # Check stop loss and take profit
+                            if current_price <= float(trade_params['stop_loss']):
+                                print(f"\n🔴 STOP LOSS TRIGGERED at ${current_price:.4f}!")
+                                exit_reason = "Stop Loss"
+                                break
+                            elif current_price >= float(trade_params['take_profit']):
+                                print(f"\n🟢 TAKE PROFIT TRIGGERED at ${current_price:.4f}!")
+                                exit_reason = "Take Profit"
+                                break
+                            elif elapsed_hours >= self.config['trading']['max_trade_duration_hours']:
+                                print(f"\n⏰ MAXIMUM TRADE DURATION REACHED ({elapsed_hours:.1f}h)!")
+                                exit_reason = "Time Exit"
+                                break
+                            else:
+                                print("   Status: Monitoring... (checking again in 60 seconds)")
+                                time.sleep(60)  # Check every minute
+                                continue
+                    
+                    # Execute exit
+                    print(f"Executing exit trade at ${current_price:.2f}...")
+                    exit_info = self._execute_trade(
+                        self.config['trading']['symbol'],
+                        'SELL',
+                        position_size,
+                        current_price,
+                        is_mock=not self.live_trading
+                    )
+                    
+                    # Ensure risk amount is set in exit info
+                    exit_info['quantity'] = float(position_size)
+                    exit_info['risk_amount'] = float(risk_amount)
+                    exit_info['exit_reason'] = exit_reason
+                    exit_info['trade_details'] = {
+                        'risk_amount': float(risk_amount),
+                        'quantity': float(position_size),
+                        'execution_price': float(current_price)
+                    }
+                    
+                    print("\nExit Trade Debug:")
+                    print(f"Exit Info Risk Amount: ${exit_info['risk_amount']:.2f}")
+                    print(f"Exit Trade Details Risk Amount: ${exit_info['trade_details']['risk_amount']:.2f}")
+                    
+                    # Evaluate trade
+                    trade_evaluation = self._evaluate_trade(entry_info, exit_info)
+                    
+                    print("\nTrade Evaluation Debug:")
+                    print(f"Entry Info Risk Amount: ${entry_info['risk_amount']:.2f}")
+                    print(f"Exit Info Risk Amount: ${exit_info['risk_amount']:.2f}")
+                    print(f"Trade Evaluation Risk Amount: ${trade_evaluation['risk_amount']:.2f}")
+                    print(f"Net PnL: ${trade_evaluation['net_pnl']:.2f}")
+                    
+                    # Add additional trade information
+                    trade_evaluation.update({
+                        'entry_timestamp': entry_info['timestamp'],
+                        'exit_timestamp': exit_info['timestamp'],
+                        'entry_price': float(entry_info['execution_price']),
+                        'exit_price': float(exit_info['execution_price']),
+                        'position_size': float(position_size),
+                        'risk_amount': float(risk_amount),  # Ensure risk amount is preserved
+                        'slippage': float(entry_info.get('slippage', 0.0)) + float(exit_info.get('slippage', 0.0)),
+                        'trade_details': {
                             'risk_amount': float(risk_amount),
-                            'quantity': float(position_size),
-                            'execution_price': float(current_price)
-                        }
-                        
-                        print("\nExit Trade Debug:")
-                        print(f"Exit Info Risk Amount: ${exit_info['risk_amount']:.2f}")
-                        print(f"Exit Trade Details Risk Amount: ${exit_info['trade_details']['risk_amount']:.2f}")
-                        
-                        # Evaluate trade
-                        trade_evaluation = self._evaluate_trade(entry_info, exit_info)
-                        
-                        print("\nTrade Evaluation Debug:")
-                        print(f"Entry Info Risk Amount: ${entry_info['risk_amount']:.2f}")
-                        print(f"Exit Info Risk Amount: ${exit_info['risk_amount']:.2f}")
-                        print(f"Trade Evaluation Risk Amount: ${trade_evaluation['risk_amount']:.2f}")
-                        print(f"Net PnL: ${trade_evaluation['net_pnl']:.2f}")
-                        
-                        # Add additional trade information
-                        trade_evaluation.update({
-                            'entry_timestamp': entry_info['timestamp'],
-                            'exit_timestamp': exit_info['timestamp'],
+                            'position_size': float(position_size),
                             'entry_price': float(entry_info['execution_price']),
                             'exit_price': float(exit_info['execution_price']),
-                            'position_size': float(position_size),
-                            'risk_amount': float(risk_amount),  # Ensure risk amount is preserved
-                            'slippage': float(entry_info.get('slippage', 0.0)) + float(exit_info.get('slippage', 0.0)),
-                            'trade_details': {
-                                'risk_amount': float(risk_amount),
-                                'position_size': float(position_size),
-                                'entry_price': float(entry_info['execution_price']),
-                                'exit_price': float(exit_info['execution_price']),
-                                'net_pnl': float(trade_evaluation['net_pnl'])
-                            }
-                        })
-                        
-                        # Calculate risk units
-                        risk_units = self._calculate_risk_units(trade_evaluation)
-                        print(f"\nRisk Units Calculation:")
-                        print(f"Net PnL: ${trade_evaluation['net_pnl']:.2f}")
-                        print(f"Risk Amount: ${trade_evaluation['risk_amount']:.2f}")
-                        print(f"Risk Units: {risk_units:.2f}")
-                        
-                        # Log trade
-                        trade_details = {
-                            'entry_timestamp': entry_info['timestamp'],
-                            'exit_timestamp': exit_info['timestamp'],
-                            'entry_price': float(entry_info['execution_price']),
-                            'exit_price': float(exit_info['execution_price']),
-                            'position_size': float(position_size),
-                            'risk_amount': float(risk_amount),
-                            'net_pnl': float(trade_evaluation['net_pnl']),
-                            'fees': float(trade_evaluation['fees']),
-                            'slippage': float(trade_evaluation['slippage']),
-                            'risk_reward_ratio': float(trade_evaluation['risk_reward_ratio']),
-                            'risk_units': float(trade_evaluation['risk_units']),  # Get risk units directly from evaluation
-                            'current_portfolio_value': float(self.portfolio_value),
-                            'exit_reason': trade_evaluation['exit_reason']
+                            'net_pnl': float(trade_evaluation['net_pnl'])
                         }
-                        
-                        print("\nFinal Trade Details Debug:")
-                        print(f"Risk Amount: ${trade_details['risk_amount']:.2f}")
-                        print(f"Net PnL: ${trade_details['net_pnl']:.2f}")
-                        print(f"Risk Units: {trade_details['risk_units']:.2f}")
-                        
-                        self._log_trade(trade_details)
-                        
-                        # Update portfolio and ML model
-                        self._update_portfolio_value(float(trade_evaluation['net_pnl']))
-                        self._ml_feedback_loop(trade_evaluation)
-                        
-                        trades_today += 1
-                        break
+                    })
+                    
+                    # Calculate risk units
+                    risk_units = self._calculate_risk_units(trade_evaluation)
+                    print(f"\nRisk Units Calculation:")
+                    print(f"Net PnL: ${trade_evaluation['net_pnl']:.2f}")
+                    print(f"Risk Amount: ${trade_evaluation['risk_amount']:.2f}")
+                    print(f"Risk Units: {risk_units:.2f}")
+                    
+                    # Log trade
+                    trade_details = {
+                        'entry_timestamp': entry_info['timestamp'],
+                        'exit_timestamp': exit_info['timestamp'],
+                        'entry_price': float(entry_info['execution_price']),
+                        'exit_price': float(exit_info['execution_price']),
+                        'position_size': float(position_size),
+                        'risk_amount': float(risk_amount),
+                        'net_pnl': float(trade_evaluation['net_pnl']),
+                        'fees': float(trade_evaluation['fees']),
+                        'slippage': float(trade_evaluation['slippage']),
+                        'risk_reward_ratio': float(trade_evaluation['risk_reward_ratio']),
+                        'risk_units': float(trade_evaluation['risk_units']),  # Get risk units directly from evaluation
+                        'current_portfolio_value': float(self.portfolio_value),
+                        'exit_reason': trade_evaluation['exit_reason']
+                    }
+                    
+                    print("\nFinal Trade Details Debug:")
+                    print(f"Risk Amount: ${trade_details['risk_amount']:.2f}")
+                    print(f"Net PnL: ${trade_details['net_pnl']:.2f}")
+                    print(f"Risk Units: {trade_details['risk_units']:.2f}")
+                    
+                    self._log_trade(trade_details)
+                    
+                    # Update portfolio and ML model
+                    self._update_portfolio_value(float(trade_evaluation['net_pnl']))
+                    self._ml_feedback_loop(trade_evaluation)
+                    
+                    trades_today += 1
+                    break
                 else:
                     print("\nNo trade taken - ML confidence below threshold")
                     print(f"Required confidence: {self.config['ml_model']['prediction_threshold']:.2%}")

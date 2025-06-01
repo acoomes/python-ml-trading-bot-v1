@@ -1,9 +1,9 @@
 {
     "trading": {
-        "symbol": "BTC-USD",
-        "starting_portfolio_amount": 10000.0,
-        "max_trades_per_day": 5,
-        "risk_per_trade_percent": 10,
+        "symbol": "XRP-USD",
+        "starting_portfolio_amount": 100.0,
+        "max_trades_per_day": 10,
+        "risk_per_trade_percent": 5,
         "profit_target_percent": 25.0,
         "max_portfolio_drawdown_percent": 20.0,
         "consecutive_losses_threshold": 3,
@@ -19,7 +19,7 @@
         "min_risk_reward_ratio": 1.5
     },
     "ml_model": {
-        "prediction_threshold": 0.15,
+        "prediction_threshold": 0.12,
         "trades_before_retraining": 1,
         "features": [
             "SMA_20",
@@ -38,14 +38,11 @@
         "alert_level": "INFO"
     },
     "coinbase": {
-        "enabled": false,
-        "api_key": "YOUR_API_KEY",
-        "api_secret": "YOUR_API_SECRET",
-        "passphrase": "YOUR_PASSPHRASE",
-        "api_url": "https://api.exchange.coinbase.com"
+        "enabled": true,
+        "api_url": "https://api.coinbase.com/api/v3/brokerage/"
     },
     "backtest": {
-        "start_date": "2025-03-28",
+        "start_date": "2025-04-28",
         "end_date": "2025-05-28"
     }
 } 

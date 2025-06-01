@@ -37,3 +37,7 @@ ENV/
 *.log
 *.csv
 *.png 
+
+# Credentials
+*api_key.json
+*api_secret.json
