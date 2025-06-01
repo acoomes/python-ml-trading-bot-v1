@@ -37,6 +37,7 @@ ENV/
 *.log
 *.csv
 *.png 
+current_position.json
 
 # Credentials
 *api_key.json
