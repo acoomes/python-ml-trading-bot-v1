@@ -1,19 +1,14 @@
 # ML-Powered Trading Bot
 
-A sophisticated algorithmic trading bot that combines machine learning with robust risk management for automated trading. The bot is designed to execute a maximum of one complete trade per trading day, with a focus on intelligent trade generation through ML feedback and comprehensive risk management.
+A sophisticated algorithmic trading bot that combines machine learning with robust risk management for automated trading. The bot is designed to execute a configurable maximum number of trades per trading day, with a focus on intelligent trade generation through ML feedback and comprehensive risk management.
 
 ## Features
 
 - **ML-Powered Trading**: Uses machine learning to generate trading signals based on technical indicators and market data
-- **Risk Management**:
-  - Maximum 1% risk per trade
-  - 20% profit target per trade
-  - Global portfolio drawdown limit
-  - Cool-down periods after consecutive losses
-  - Time-based trade exits
+- **Risk Management**: Configurable constraints to manage risk levels
 - **Adaptive Learning**: ML model updates based on trade outcomes
 - **Comprehensive Logging**: Detailed trade logging with performance metrics
-- **Simulated Environment**: Safe testing environment with mock trade execution
+- **Simulated Environment**: Safe backtesting environment with mock trade execution
 - **Coinbase Integration**: Optional real trading via the Coinbase API
 
 ## Requirements
@@ -51,7 +46,11 @@ provide your Coinbase API key, secret, and passphrase.
 ## Usage
 
 1. Configure the bot by editing `config.json`
-2. Run the bot:
+2. Perform simulated test runs of the bot, using the values from `config.json`:
+```bash
+python backtest.py
+```
+4. Run the bot:
 ```bash
 python trading_bot.py
 ```
@@ -65,14 +64,15 @@ funds.
 - `trading_bot.py`: Core trading bot implementation
 - `config.json`: Configuration file
 - `requirements.txt`: Python dependencies
+- `backtest.py`: Simulated trading using values in `config.json` (good for testing configurations and strategies)
 - `trades.log`: Trade history and performance logs
 
 ## Risk Management
 
-The bot implements several risk management features:
+The bot implements several risk management features, configured in `config.json`:
 
-1. **Per-Trade Risk**: Maximum 1% of portfolio per trade
-2. **Profit Targets**: 20% maximum profit target per trade
+1. **Per-Trade Risk**: Maximum % of portfolio per trade
+2. **Profit Targets**: % maximum profit target per trade
 3. **Drawdown Protection**: Global portfolio drawdown limit
 4. **Cool-down Periods**: Automatic trading pause after consecutive losses
 5. **Time-Based Exits**: Maximum trade duration enforcement
