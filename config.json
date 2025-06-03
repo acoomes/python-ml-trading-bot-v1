@@ -2,39 +2,47 @@
     "trading": {
         "symbol": "XRP-USD",
         "starting_portfolio_amount": 100.0,
-        "max_trades_per_day": 10,
-        "risk_per_trade_percent": 10,
-        "profit_target_percent": 25.0,
-        "max_portfolio_drawdown_percent": 20.0,
+        "max_trades_per_day": 3,
+        "risk_per_trade_percent": 5,
+        "profit_target_percent": 2,
+        "max_portfolio_drawdown_percent": 25.0,
         "consecutive_losses_threshold": 3,
-        "intraday_loss_threshold_percent": 5.0,
-        "cooldown_period_hours": 24,
-        "max_trade_duration_hours": 8,
+        "intraday_loss_threshold_percent": 8.0,
+        "cooldown_period_hours": 12,
+        "max_trade_duration_hours": 36,
         "min_trade_quantity": 0.0001,
-        "fee_percent": 1.5
+        "fee_percent": 0.6,
+        "trailing_stop_enabled": true,
+        "trailing_stop_activation_percent": 1.5,
+        "trailing_stop_distance_percent": 0.8
     },
     "risk_management": {
-        "slippage_percent": 0.1,
-        "transaction_fee_percent": 0.1,
-        "min_risk_reward_ratio": 1.5
+        "slippage_percent": 0.05,
+        "transaction_fee_percent": 0.6
     },
     "ml_model": {
-        "prediction_threshold": 0.10,
+        "prediction_threshold": 0.12,
         "trades_before_retraining": 1,
         "features": [
-            "SMA_20",
-            "SMA_50",
+            "BB_width",
             "RSI",
             "MACD",
-            "BB_upper",
-            "BB_lower",
-            "ATR",
             "Returns",
-            "Volume_Change"
+            "High_Low_Pct",
+            "EMA_9",
+            "EMA_50",
+            "SMA_20",
+            "MACD_signal",
+            "Price_vs_EMA9",
+            "Volume_Ratio",
+            "EMA_Cross",
+            "ATR",
+            "Price_vs_SMA20",
+            "SMA_Cross"
         ]
     },
     "logging": {
-        "log_file": "trades.log",
+        "log_file": "trading_bot.log",
         "alert_level": "INFO"
     },
     "coinbase": {

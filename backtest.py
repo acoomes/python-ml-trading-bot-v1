@@ -117,10 +117,48 @@ class BacktestBot(TradingBot):
             entry_info['quantity'] = trade_params['position_size']
             entry_info['entry_timestamp'] = self.current_date
             
-            # Monitor trade (simulate immediate exit for backtest)
-            # For backtest, let's assume we exit at take profit, stop loss, or end of day
-            # Here, we'll just simulate a random exit within the range for demonstration
-            exit_price = np.random.uniform(trade_params['stop_loss'], trade_params['take_profit'])
+            # Monitor trade (realistic market-based exit simulation)
+            # Instead of random exits, simulate realistic price movement over trading hours
+            trade_duration_hours = int(self.config['trading']['max_trade_duration_hours'])
+            
+            # Get historical volatility for this asset to simulate realistic price movement
+            historical_returns = market_data['Close'].pct_change().dropna()
+            daily_volatility = historical_returns.std()
+            
+            # Use the dynamic profit target from trade_params instead of static config
+            dynamic_take_profit = trade_params.get('take_profit', current_price * (1 + self.config['trading']['profit_target_percent'] / 100))
+            dynamic_profit_target_pct = trade_params.get('dynamic_profit_target', self.config['trading']['profit_target_percent'])
+            
+            # Simulate hourly price movements over the trade duration
+            exit_price = current_price
+            exit_reason = "Time Exit"  # Default
+            
+            for hour in range(1, trade_duration_hours + 1):
+                # Simulate hourly price movement based on historical volatility
+                # Scale daily volatility to hourly (approximately daily_vol / sqrt(24))
+                hourly_volatility = daily_volatility / np.sqrt(24)
+                price_change = np.random.normal(0, hourly_volatility)
+                exit_price = exit_price * (1 + price_change)
+                
+                # Check if we hit stop loss or take profit using dynamic values
+                if exit_price <= trade_params['stop_loss']:
+                    exit_reason = "Stop Loss"
+                    exit_price = trade_params['stop_loss']
+                    break
+                elif exit_price >= dynamic_take_profit:
+                    exit_reason = "Take Profit"
+                    exit_price = dynamic_take_profit
+                    break
+                    
+            # Log the simulated exit details with dynamic target info
+            print(f"\nSimulated Trade Exit:")
+            print(f"Entry: ${current_price:.4f} -> Exit: ${exit_price:.4f}")
+            print(f"Duration: {hour if exit_reason != 'Time Exit' else trade_duration_hours} hours")
+            print(f"Exit Reason: {exit_reason}")
+            print(f"PnL: {((exit_price - current_price) / current_price) * 100:.2f}%")
+            print(f"Dynamic Profit Target Used: {dynamic_profit_target_pct:.1f}%")
+            
+            # Execute the simulated exit trade
             exit_info = self._execute_trade(
                 self.config['trading']['symbol'],
                 'SELL',
@@ -129,6 +167,7 @@ class BacktestBot(TradingBot):
             )
             exit_info['quantity'] = trade_params['position_size']
             exit_info['exit_timestamp'] = self.current_date
+            exit_info['exit_reason'] = exit_reason
             
             # Evaluate trade
             trade_evaluation = self._evaluate_trade(entry_info, exit_info)
@@ -153,7 +192,7 @@ class BacktestBot(TradingBot):
                 'slippage': entry_info.get('slippage', 0.0) + exit_info.get('slippage', 0.0),
                 'risk_reward_ratio': trade_evaluation['risk_reward_ratio'],
                 'current_portfolio_value': self.portfolio_value,
-                'exit_reason': 'Simulated Exit'
+                'exit_reason': exit_reason
             }
             self._log_trade(trade_details)
         else:
@@ -190,14 +229,16 @@ class BacktestBot(TradingBot):
         winning_trades = len([t for t in self.trade_history if t.get('net_pnl', 0) > 0])
         win_rate = (winning_trades / total_trades) * 100 if total_trades > 0 else 0
         
-        total_pnl = sum(t.get('net_pnl', 0) for t in self.trade_history)
-        avg_risk_units = sum(t.get('risk_reward_ratio', 0) for t in self.trade_history) / total_trades if total_trades > 0 else 0
-        total_risk_units = sum(t.get('risk_reward_ratio', 0) for t in self.trade_history)
-        
         # Calculate portfolio metrics
         initial_value = self.initial_portfolio_value
         final_value = self.portfolio_value
         total_return = ((final_value - initial_value) / initial_value) * 100
+        
+        # Fix: Calculate total_pnl as actual portfolio change, not sum of individual trades
+        total_pnl = final_value - initial_value
+        
+        avg_risk_units = sum(t.get('risk_reward_ratio', 0) for t in self.trade_history) / total_trades if total_trades > 0 else 0
+        total_risk_units = sum(t.get('risk_reward_ratio', 0) for t in self.trade_history)
         
         # Count ML retraining runs and get final ML parameters
         retrain_file = 'retraining_history.csv'
